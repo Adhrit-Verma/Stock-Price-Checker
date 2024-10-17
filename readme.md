@@ -1,3 +1,6 @@
+Here’s a modified version of your README that includes the specified JSON structure for the `portfolio.json` file. I've added a section detailing the structure of the `portfolio.json` to ensure users know how to format their stock portfolio:
+
+```markdown
 ## Usage
 
 1. **Start the Application**
@@ -24,6 +27,41 @@
 
 ---
 
+## Portfolio JSON Structure
+
+The `portfolio.json` file should follow the structure below:
+
+```json
+{
+    "portfolio": [
+      {
+        "stock_name": "Tata Consultancy Services (TCS)",
+        "symbol": "TCS.NS",
+        "quantity": 100
+      },
+      {
+        "stock_name": "Infosys",
+        "symbol": "INFY.NS",
+        "quantity": 50
+      },
+      {
+        "stock_name": "Wipro",
+        "symbol": "WIPRO.NS",
+        "quantity": 200
+      },
+      {
+        "stock_name": "Tech Mahindra",
+        "symbol": "TECHM.NS",
+        "quantity": 75
+      }
+    ]
+}
+```
+
+Make sure to replace the example stocks with your own stock data as needed.
+
+---
+
 ## Dependencies
 
 The project uses the following major dependencies:
@@ -45,3 +83,4 @@ This project is licensed under the ISC License.
 - **Adhrit Verma (KD)**
 
 ---
+```
