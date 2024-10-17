@@ -1,0 +1,30 @@
+{
+  "name": "stock-price-checker",
+  "version": "1.0.0",
+  "main": "index.js",
+  "bin": "index.js",
+  "scripts": {
+    "test": "echo \"No tests specified\" && exit 0",
+    "start": "node index.js"
+  },
+  "pkg": {
+    "assets": [
+      "portfolio.json",
+      "node_modules/open/**/*"
+    ],
+    "targets": [
+      "node16-linux-x64",
+      "node16-macos-x64",
+      "node16-win-x64"
+    ],
+    "output": "dist/your-executable-name"
+  },
+  "author": "Adhrit_Verma(KD)",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^0.21.1",
+    "express": "^4.17.1",
+    "open": "^8.1.0",
+    "yahoo-finance2": "^2.0.0"
+  }
+}

@@ -1,0 +1,25 @@
+{
+    "portfolio": [
+      {
+        "stock_name": "Tata Consultancy Services (TCS)",
+        "symbol": "TCS.NS",
+        "quantity": 100
+      },
+      {
+        "stock_name": "Infosys",
+        "symbol": "INFY.NS",
+        "quantity": 50
+      },
+      {
+        "stock_name": "Wipro",
+        "symbol": "WIPRO.NS",
+        "quantity": 200
+      },
+      {
+        "stock_name": "Tech Mahindra",
+        "symbol": "TECHM.NS",
+        "quantity": 75
+      }
+    ]
+  }
+  
