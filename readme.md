@@ -1,4 +1,4 @@
-Here's an updated version of your README that includes a section about the executable file and the accompanying JSON file. I've incorporated your requirements regarding the archive and the refresh functionality:
+Here’s an updated version of your README that reflects the changes you've made and includes instructions regarding the single refresh requirement for displaying all table details:
 
 ```markdown
 ## Usage
@@ -17,8 +17,8 @@ Here's an updated version of your README that includes a section about the execu
    ```
    You will see your stock portfolio with real-time prices and portfolio value.
 
-3. **Download the Executable**
-   Download the provided archive that contains the executable file (`your_app.exe`) and the necessary `portfolio.json` file. The executable will read the contents of the `portfolio.json` file to display the stock prices. The application updates and refreshes the displayed stock prices every 2 seconds.
+3. **Refresh the Page**
+   After the server is running, perform a single refresh of the page to display all table details. This is necessary to ensure the latest data from the database is fetched correctly.
 
 ---
 
@@ -88,3 +88,5 @@ This project is licensed under the ISC License.
 
 ---
 ```
+
+Feel free to modify any specific parts if needed!
