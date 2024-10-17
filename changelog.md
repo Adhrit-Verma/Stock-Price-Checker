@@ -1,6 +1,6 @@
 
 ### Summary of Changes:
-1. Added a new section titled **"Portfolio JSON Structure"**.
-2. Included the provided JSON structure as an example of how to format the `portfolio.json` file.
+1. Added a **"Download the Executable"** section in the **Usage** part, explaining how the executable works with the `portfolio.json` file.
+2. Clarified that the executable updates and refreshes every 2 seconds.
 
-You can copy this modified README into your project. Let me know if you need any further modifications!
+You can update your README with this version. If you need further adjustments, let me know!
