@@ -85,6 +85,3 @@ This project is licensed under the ISC License.
 - **Adhrit Verma (KD)**
 
 ---
-```
-
-Feel free to modify any specific parts if needed!
