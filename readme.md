@@ -1,5 +1,3 @@
-Here’s an updated version of your README that reflects the changes you've made and includes instructions regarding the single refresh requirement for displaying all table details:
-
 ```markdown
 ## Usage
 
