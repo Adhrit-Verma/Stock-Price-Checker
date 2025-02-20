@@ -1,2 +1,4 @@
 .history
 /portifolio.db
+*.db
+portfolio.json
