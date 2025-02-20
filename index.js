@@ -1,4 +1,5 @@
 const express = require('express');
+const session = require('express-session');
 const axios = require('axios');
 const yahooFinance = require('yahoo-finance2').default;
 const fs = require('fs').promises;
@@ -9,6 +10,13 @@ const path = require('path');
 const app = express();
 const port = process.env.PORT || 5001;
 const dbPath = process.env.DB_PATH || './portfolio.db';
+
+// Session middleware configuration
+app.use(session({
+  secret: 'your-secret-key', // Change to a strong secret in production
+  resave: false,
+  saveUninitialized: false
+}));
 
 // Middleware to parse JSON and URL-encoded bodies
 app.use(express.json());
@@ -25,27 +33,39 @@ async function fetchConversionRate() {
   }
 }
 
-// Open (or create) SQLite database and create tables with proper constraints
+// Open (or create) SQLite database and create tables
 const db = new sqlite3.Database(dbPath, (err) => {
   if (err) {
     console.error('Error opening database ' + err.message);
   } else {
     console.log('Connected to the SQLite database.');
     db.serialize(() => {
+      // Portfolio total table now stores account_id and enforces uniqueness per account and date
       db.run(`CREATE TABLE IF NOT EXISTS portfoliototal (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id INTEGER,
         FinalTotal REAL,
         date TEXT,
-        difference REAL
+        difference REAL,
+        UNIQUE(account_id, date)
       )`);
+      // Price details table now stores account_id and enforces uniqueness per account, name, and datetime
       db.run(`CREATE TABLE IF NOT EXISTS pricedetails (
         Id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id INTEGER,
         name TEXT,
         quantity INTEGER,
         price REAL,
         value REAL,
         datetime TEXT,
-        UNIQUE(name, datetime)
+        UNIQUE(account_id, name, datetime)
+      )`);
+      // PMS accounts table now includes a password field for authentication
+      db.run(`CREATE TABLE IF NOT EXISTS pms_accounts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_name TEXT UNIQUE,
+        password TEXT,
+        description TEXT
       )`);
     });
   }
@@ -74,43 +94,200 @@ async function checkAPI() {
   }
 }
 
-// Function to read portfolio from the JSON file
-async function getPortfolio() {
+// Functions to get and save an account’s portfolio from a file
+async function getPortfolio(accountId) {
+  const filePath = `./portfolios/portfolio_${accountId}.json`;
   try {
-    const data = await fs.readFile('./portfolio.json', 'utf8');
+    const data = await fs.readFile(filePath, 'utf8');
     return JSON.parse(data).portfolio;
   } catch (error) {
-    throw 'Error reading portfolio.json: ' + error.message;
+    return []; // Return empty portfolio if file not found
   }
 }
 
-// Function to write the portfolio JSON file
-async function savePortfolio(portfolio) {
+async function savePortfolio(portfolio, accountId) {
+  const filePath = `./portfolios/portfolio_${accountId}.json`;
   const data = JSON.stringify({ portfolio }, null, 2);
-  await fs.writeFile('./portfolio.json', data, 'utf8');
+  await fs.writeFile(filePath, data, 'utf8');
 }
 
-// Function to fetch stock price for each stock
+// Function to fetch stock price along with currency info
 async function getStockPrice(symbol) {
   try {
     const quote = await yahooFinance.quote(symbol);
     if (!quote || !quote.regularMarketPrice) {
       throw new Error(`Price not found for ${symbol}`);
     }
-    // Return both price and currency (defaulting to 'USD' if currency is not provided)
     return { price: quote.regularMarketPrice, currency: quote.currency || 'USD' };
   } catch (error) {
     throw `Error fetching price for ${symbol}: ${error.message}`;
   }
 }
 
+// ------------------------
+// Authentication Routes
+// ------------------------
 
-// Serve the main HTML page with improved UI, Add Stock form, and Manage Stocks section
+// Login Page with enhanced styling
+app.get('/login', (req, res) => {
+  const html = `
+  <!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <title>Login</title>
+    <style>
+      body { 
+        background: #f7f7f7; 
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+        display: flex; 
+        justify-content: center; 
+        align-items: center; 
+        height: 100vh;
+        margin: 0;
+      }
+      .login-container {
+        background: #fff;
+        padding: 30px;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        width: 350px;
+      }
+      h1 { text-align: center; color: #4CAF50; }
+      form { display: flex; flex-direction: column; }
+      input { padding: 10px; margin-bottom: 15px; border: 1px solid #ccc; border-radius: 4px; }
+      button { padding: 10px; background: #4CAF50; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+      button:hover { background: #45a049; }
+      .signup-link { text-align: center; margin-top: 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="login-container">
+      <h1>Login</h1>
+      <form method="POST" action="/login">
+        <input type="text" name="account_name" placeholder="Account Name" required />
+        <input type="password" name="password" placeholder="Password" required />
+        <button type="submit">Login</button>
+      </form>
+      <div class="signup-link">
+        <p>Don't have an account? <a href="/signup">Sign Up</a></p>
+      </div>
+    </div>
+  </body>
+  </html>
+  `;
+  res.send(html);
+});
+
+// Handle Login Submission
+app.post('/login', (req, res) => {
+  const { account_name, password } = req.body;
+  if (!account_name || !password) {
+    return res.send("Account name and password required");
+  }
+  db.get("SELECT * FROM pms_accounts WHERE account_name = ? AND password = ?", [account_name, password], (err, account) => {
+    if (err || !account) {
+      return res.send("Invalid credentials. <a href='/login'>Try again</a>");
+    }
+    req.session.account = { id: account.id, account_name: account.account_name };
+    res.redirect('/');
+  });
+});
+
+// Sign Up Page with enhanced styling
+app.get('/signup', (req, res) => {
+  const html = `
+  <!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <title>Sign Up</title>
+    <style>
+      body { 
+        background: #f7f7f7; 
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+        display: flex; 
+        justify-content: center; 
+        align-items: center; 
+        height: 100vh;
+        margin: 0;
+      }
+      .signup-container {
+        background: #fff;
+        padding: 30px;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        width: 350px;
+      }
+      h1 { text-align: center; color: #4CAF50; }
+      form { display: flex; flex-direction: column; }
+      input { padding: 10px; margin-bottom: 15px; border: 1px solid #ccc; border-radius: 4px; }
+      button { padding: 10px; background: #4CAF50; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+      button:hover { background: #45a049; }
+      .login-link { text-align: center; margin-top: 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="signup-container">
+      <h1>Sign Up</h1>
+      <form method="POST" action="/signup">
+        <input type="text" name="account_name" placeholder="Account Name" required />
+        <input type="password" name="password" placeholder="Password" required />
+        <input type="text" name="description" placeholder="Description (Optional)" />
+        <button type="submit">Sign Up</button>
+      </form>
+      <div class="login-link">
+        <p>Already have an account? <a href="/login">Login</a></p>
+      </div>
+    </div>
+  </body>
+  </html>
+  `;
+  res.send(html);
+});
+
+// Handle Sign Up Submission and redirect to login
+app.post('/signup', (req, res) => {
+  const { account_name, password, description } = req.body;
+  if (!account_name || !password) {
+    return res.send("Account name and password required");
+  }
+  db.run("INSERT INTO pms_accounts (account_name, password, description) VALUES (?, ?, ?)", [account_name, password, description], function(err) {
+    if (err) {
+      return res.send("Error creating account: " + err.message);
+    }
+    const newAccountId = this.lastID;
+    const portfolioData = { portfolio: [] };
+    fs.writeFile(`./portfolios/portfolio_${newAccountId}.json`, JSON.stringify(portfolioData, null, 2), 'utf8')
+      .then(() => {
+         res.redirect('/login');
+      })
+      .catch((err) => {
+         res.send("Account created but error initializing portfolio: " + err.message);
+      });
+  });
+});
+
+// Logout
+app.get('/logout', (req, res) => {
+  req.session.destroy();
+  res.redirect('/login');
+});
+
+// -------------------------------
+// Portfolio & Stock Management Routes
+// (These require the user to be logged in.)
+// -------------------------------
+
+// Main Portfolio Page (UI)
 app.get('/', async (req, res) => {
+  if (!req.session.account) {
+    return res.redirect('/login');
+  }
   try {
-    // Fetch historical data from database
+    // Fetch historical data for this account from the database
     const portfolioTotals = await new Promise((resolve, reject) => {
-      db.all(`SELECT * FROM portfoliototal ORDER BY date ASC`, [], (err, rows) => {
+      db.all(`SELECT * FROM portfoliototal WHERE account_id = ? ORDER BY date ASC`, [req.session.account.id], (err, rows) => {
         if (err) {
           return reject('Error fetching portfolio totals: ' + err.message);
         }
@@ -118,7 +295,7 @@ app.get('/', async (req, res) => {
       });
     });
     const priceDetails = await new Promise((resolve, reject) => {
-      db.all(`SELECT * FROM pricedetails ORDER BY datetime ASC`, [], (err, rows) => {
+      db.all(`SELECT * FROM pricedetails WHERE account_id = ? ORDER BY datetime ASC`, [req.session.account.id], (err, rows) => {
         if (err) {
           return reject('Error fetching price details: ' + err.message);
         }
@@ -167,7 +344,7 @@ app.get('/', async (req, res) => {
   <html lang="en">
   <head>
     <meta charset="UTF-8">
-    <title>Stock Price Checker</title>
+    <title>Stock Price Checker - ${req.session.account.account_name}</title>
     <style>
       body {
         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -190,6 +367,10 @@ app.get('/', async (req, res) => {
         background: #4CAF50;
         color: #fff;
         border-radius: 8px;
+      }
+      .header-info {
+        text-align: right;
+        margin-bottom: 10px;
       }
       .card {
         background: #fff;
@@ -257,6 +438,9 @@ app.get('/', async (req, res) => {
   </head>
   <body>
     <div class="container">
+      <div class="header-info">
+        Logged in as: ${req.session.account.account_name} | <a href="/logout">Logout</a>
+      </div>
       <header>
         <h1>Stock Price Checker</h1>
       </header>
@@ -561,6 +745,9 @@ app.get('/', async (req, res) => {
 
 // Endpoint to update/insert stock price details and return updated portfolio data
 app.get('/portfolio', async (req, res) => {
+  if (!req.session.account) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   try {
     await checkInternet();
     await checkAPI();
@@ -568,24 +755,23 @@ app.get('/portfolio', async (req, res) => {
     if (!conversionRate) {
       return res.status(500).json({ error: 'Failed to fetch conversion rate' });
     }
-    const portfolio = await getPortfolio();
+    const portfolio = await getPortfolio(req.session.account.id);
     const currentDate = new Date().toISOString().split('T')[0];
     const portfolioWithPrices = await Promise.all(
       portfolio.map(async stock => {
         try {
           const { price, currency } = await getStockPrice(stock.symbol);
-          // Convert the price only if it's not already in INR
           const priceInRupees = currency === 'INR' ? price : price * conversionRate;
           const valueInRupees = priceInRupees * stock.quantity;
           return new Promise((resolve, reject) => {
             db.run(
-              `INSERT INTO pricedetails (name, quantity, price, value, datetime)
-               VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(name, datetime) DO UPDATE SET 
+              `INSERT INTO pricedetails (account_id, name, quantity, price, value, datetime)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(account_id, name, datetime) DO UPDATE SET 
                  quantity = excluded.quantity,
                  price = excluded.price,
                  value = excluded.value;`,
-              [stock.stock_name, stock.quantity, priceInRupees, valueInRupees, currentDate],
+              [req.session.account.id, stock.stock_name, stock.quantity, priceInRupees, valueInRupees, currentDate],
               function(err) {
                 if (err) {
                   console.error('Error upserting price details:', err.message);
@@ -602,20 +788,20 @@ app.get('/portfolio', async (req, res) => {
       })
     );
     const totalValueInRupees = portfolioWithPrices.reduce((acc, stock) => acc + (stock.price * stock.quantity || 0), 0);
-    db.get(`SELECT FinalTotal FROM portfoliototal WHERE date = ?`, [currentDate], (err, row) => {
+    db.get(`SELECT FinalTotal FROM portfoliototal WHERE account_id = ? AND date = ?`, [req.session.account.id, currentDate], (err, row) => {
       let previousTotal = row ? row.FinalTotal : 0;
       const difference = totalValueInRupees - previousTotal;
       if (row) {
-        db.run(`UPDATE portfoliototal SET FinalTotal = ?, difference = ? WHERE date = ?`,
-          [totalValueInRupees, difference, currentDate],
+        db.run(`UPDATE portfoliototal SET FinalTotal = ?, difference = ? WHERE account_id = ? AND date = ?`,
+          [totalValueInRupees, difference, req.session.account.id, currentDate],
           (err) => {
             if (err) {
               console.error('Error updating total:', err.message);
             }
           });
       } else {
-        db.run(`INSERT INTO portfoliototal (FinalTotal, date, difference) VALUES (?, ?, ?)`,
-          [totalValueInRupees, currentDate, difference]
+        db.run(`INSERT INTO portfoliototal (account_id, FinalTotal, date, difference) VALUES (?, ?, ?, ?)`,
+          [req.session.account.id, totalValueInRupees, currentDate, difference]
         );
       }
       res.json(portfolioWithPrices);
@@ -625,9 +811,12 @@ app.get('/portfolio', async (req, res) => {
   }
 });
 
-// Updated endpoint to return the latest portfolio total including the difference
+// Endpoint to return the latest portfolio total including the difference
 app.get('/latestPortfolioTotal', (req, res) => {
-  db.get(`SELECT FinalTotal, difference FROM portfoliototal ORDER BY date DESC LIMIT 1`, (err, row) => {
+  if (!req.session.account) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  db.get(`SELECT FinalTotal, difference FROM portfoliototal WHERE account_id = ? ORDER BY date DESC LIMIT 1`, [req.session.account.id], (err, row) => {
     if (err) {
       console.error('Error fetching latest total:', err.message);
       return res.status(500).json({ error: 'Failed to fetch latest total' });
@@ -636,38 +825,46 @@ app.get('/latestPortfolioTotal', (req, res) => {
   });
 });
 
-// New endpoint to add a new stock to portfolio.json
+// Endpoint to add a new stock to the account's portfolio
 app.post('/addStock', async (req, res) => {
+  if (!req.session.account) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   try {
     const { stock_name, symbol, quantity } = req.body;
     if (!stock_name || !symbol || !quantity) {
       return res.status(400).json({ error: 'stock_name, symbol, and quantity are required.' });
     }
     let portfolioData;
+    const filePath = `./portfolios/portfolio_${req.session.account.id}.json`;
     try {
-      const data = await fs.readFile('./portfolio.json', 'utf8');
+      const data = await fs.readFile(filePath, 'utf8');
       portfolioData = JSON.parse(data);
     } catch (e) {
       portfolioData = { portfolio: [] };
     }
     portfolioData.portfolio.push({ stock_name, symbol, quantity });
-    await fs.writeFile('./portfolio.json', JSON.stringify(portfolioData, null, 2), 'utf8');
+    await fs.writeFile(filePath, JSON.stringify(portfolioData, null, 2), 'utf8');
     res.json({ message: 'Stock added successfully!' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// New endpoint to edit an existing stock's quantity in portfolio.json
+// Endpoint to edit an existing stock's quantity in the account's portfolio
 app.put('/editStock', async (req, res) => {
+  if (!req.session.account) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   try {
     const { symbol, quantity } = req.body;
     if (!symbol || quantity == null) {
       return res.status(400).json({ error: 'symbol and quantity are required.' });
     }
     let portfolioData;
+    const filePath = `./portfolios/portfolio_${req.session.account.id}.json`;
     try {
-      const data = await fs.readFile('./portfolio.json', 'utf8');
+      const data = await fs.readFile(filePath, 'utf8');
       portfolioData = JSON.parse(data);
     } catch (e) {
       return res.status(500).json({ error: 'Portfolio file not found.' });
@@ -683,23 +880,27 @@ app.put('/editStock', async (req, res) => {
     if (!updated) {
       return res.status(404).json({ error: 'Stock not found.' });
     }
-    await fs.writeFile('./portfolio.json', JSON.stringify(portfolioData, null, 2), 'utf8');
+    await fs.writeFile(filePath, JSON.stringify(portfolioData, null, 2), 'utf8');
     res.json({ message: 'Stock updated successfully!' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// New endpoint to delete a stock from portfolio.json
+// Endpoint to delete a stock from the account's portfolio
 app.delete('/deleteStock', async (req, res) => {
+  if (!req.session.account) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   try {
     const { symbol } = req.body;
     if (!symbol) {
       return res.status(400).json({ error: 'symbol is required.' });
     }
     let portfolioData;
+    const filePath = `./portfolios/portfolio_${req.session.account.id}.json`;
     try {
-      const data = await fs.readFile('./portfolio.json', 'utf8');
+      const data = await fs.readFile(filePath, 'utf8');
       portfolioData = JSON.parse(data);
     } catch (e) {
       return res.status(500).json({ error: 'Portfolio file not found.' });
@@ -709,17 +910,20 @@ app.delete('/deleteStock', async (req, res) => {
     if (portfolioData.portfolio.length === originalLength) {
       return res.status(404).json({ error: 'Stock not found.' });
     }
-    await fs.writeFile('./portfolio.json', JSON.stringify(portfolioData, null, 2), 'utf8');
+    await fs.writeFile(filePath, JSON.stringify(portfolioData, null, 2), 'utf8');
     res.json({ message: 'Stock deleted successfully!' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// New endpoint to return the portfolio stocks (for Manage Stocks section)
+// Endpoint to return the account's portfolio stocks (for Manage Stocks section)
 app.get('/stocks', async (req, res) => {
+  if (!req.session.account) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   try {
-    const data = await fs.readFile('./portfolio.json', 'utf8');
+    const data = await fs.readFile(`./portfolios/portfolio_${req.session.account.id}.json`, 'utf8');
     const portfolioData = JSON.parse(data);
     res.json(portfolioData.portfolio);
   } catch (error) {
@@ -727,15 +931,18 @@ app.get('/stocks', async (req, res) => {
   }
 });
 
-// New endpoint to compare portfolio totals from two different dates
+// Endpoint to compare portfolio totals from two dates (account-specific)
 app.get('/compare', (req, res) => {
+  if (!req.session.account) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   const { date1, date2 } = req.query;
   if (!date1 || !date2) {
     return res.status(400).json({ error: 'Both date1 and date2 query parameters are required in YYYY-MM-DD format.' });
   }
-  db.get(`SELECT FinalTotal FROM portfoliototal WHERE date = ?`, [date1], (err, row1) => {
+  db.get(`SELECT FinalTotal FROM portfoliototal WHERE account_id = ? AND date = ?`, [req.session.account.id, date1], (err, row1) => {
     if (err) return res.status(500).json({ error: err.message });
-    db.get(`SELECT FinalTotal FROM portfoliototal WHERE date = ?`, [date2], (err, row2) => {
+    db.get(`SELECT FinalTotal FROM portfoliototal WHERE account_id = ? AND date = ?`, [req.session.account.id, date2], (err, row2) => {
       if (err) return res.status(500).json({ error: err.message });
       if (!row1 || !row2) {
         return res.status(404).json({ error: 'One or both of the specified dates were not found in records.' });
@@ -752,7 +959,7 @@ app.get('/compare', (req, res) => {
   });
 });
 
-// Start server
+// Start the server
 app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);
 });
