@@ -1,5 +1,3 @@
-Here’s an updated version of your README that reflects the changes you've made and includes instructions regarding the single refresh requirement for displaying all table details:
-
 ```markdown
 ## Usage
 
@@ -87,6 +85,3 @@ This project is licensed under the ISC License.
 - **Adhrit Verma (KD)**
 
 ---
-```
-
-Feel free to modify any specific parts if needed!
