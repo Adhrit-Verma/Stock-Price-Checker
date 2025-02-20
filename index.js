@@ -97,11 +97,13 @@ async function getStockPrice(symbol) {
     if (!quote || !quote.regularMarketPrice) {
       throw new Error(`Price not found for ${symbol}`);
     }
-    return quote.regularMarketPrice;
+    // Return both price and currency (defaulting to 'USD' if currency is not provided)
+    return { price: quote.regularMarketPrice, currency: quote.currency || 'USD' };
   } catch (error) {
     throw `Error fetching price for ${symbol}: ${error.message}`;
   }
 }
+
 
 // Serve the main HTML page with improved UI, Add Stock form, and Manage Stocks section
 app.get('/', async (req, res) => {
@@ -571,10 +573,10 @@ app.get('/portfolio', async (req, res) => {
     const portfolioWithPrices = await Promise.all(
       portfolio.map(async stock => {
         try {
-          const price = await getStockPrice(stock.symbol);
-          const value = price * stock.quantity;
-          const priceInRupees = price * conversionRate;
-          const valueInRupees = value * conversionRate;
+          const { price, currency } = await getStockPrice(stock.symbol);
+          // Convert the price only if it's not already in INR
+          const priceInRupees = currency === 'INR' ? price : price * conversionRate;
+          const valueInRupees = priceInRupees * stock.quantity;
           return new Promise((resolve, reject) => {
             db.run(
               `INSERT INTO pricedetails (name, quantity, price, value, datetime)
