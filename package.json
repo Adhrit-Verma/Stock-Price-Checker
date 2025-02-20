@@ -1,11 +1,11 @@
 {
   "name": "stock-price-checker",
   "version": "1.0.0",
+  "description": "Stock Price Checker",
   "main": "index.js",
-  "bin": "index.js",
   "scripts": {
-    "test": "echo \"No tests specified\" && exit 0",
-    "start": "node index.js"
+    "start": "node index.js",
+    "postinstall": "npm rebuild sqlite3 --build-from-source"
   },
   "pkg": {
     "assets": [
