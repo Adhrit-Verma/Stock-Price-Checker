@@ -124,6 +124,27 @@ async function getStockPrice(symbol) {
   }
 }
 
+// ---------------------------------
+// New Endpoint for Real-Time Graph
+// ---------------------------------
+app.get('/currentPrice', async (req, res) => {
+  const symbol = req.query.symbol;
+  if (!symbol) return res.status(400).json({ error: 'Symbol is required' });
+  try {
+    await checkInternet();
+    await checkAPI();
+    const conversionRate = await fetchConversionRate();
+    if (!conversionRate) {
+      return res.status(500).json({ error: 'Failed to fetch conversion rate' });
+    }
+    const { price, currency } = await getStockPrice(symbol);
+    const priceInRupees = currency === 'INR' ? price : price * conversionRate;
+    res.json({ symbol, price: priceInRupees, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ------------------------
 // Authentication Routes
 // ------------------------
@@ -252,7 +273,7 @@ app.post('/signup', (req, res) => {
   if (!account_name || !password) {
     return res.send("Account name and password required");
   }
-  db.run("INSERT INTO pms_accounts (account_name, password, description) VALUES (?, ?, ?)", [account_name, password, description], function(err) {
+  db.run("INSERT INTO pms_accounts (account_name, password, description) VALUES (?, ?, ?)", [account_name, password, description], function (err) {
     if (err) {
       return res.send("Error creating account: " + err.message);
     }
@@ -260,10 +281,10 @@ app.post('/signup', (req, res) => {
     const portfolioData = { portfolio: [] };
     fs.writeFile(`./portfolios/portfolio_${newAccountId}.json`, JSON.stringify(portfolioData, null, 2), 'utf8')
       .then(() => {
-         res.redirect('/login');
+        res.redirect('/login');
       })
       .catch((err) => {
-         res.send("Account created but error initializing portfolio: " + err.message);
+        res.send("Account created but error initializing portfolio: " + err.message);
       });
   });
 });
@@ -274,12 +295,9 @@ app.get('/logout', (req, res) => {
   res.redirect('/login');
 });
 
-// -------------------------------
-// Portfolio & Stock Management Routes
-// (These require the user to be logged in.)
-// -------------------------------
-
-// Main Portfolio Page (UI)
+// ----------------------------------------------
+// Portfolio & Stock Management Routes (Protected)
+// ----------------------------------------------
 app.get('/', async (req, res) => {
   if (!req.session.account) {
     return res.redirect('/login');
@@ -288,24 +306,19 @@ app.get('/', async (req, res) => {
     // Fetch historical data for this account from the database
     const portfolioTotals = await new Promise((resolve, reject) => {
       db.all(`SELECT * FROM portfoliototal WHERE account_id = ? ORDER BY date ASC`, [req.session.account.id], (err, rows) => {
-        if (err) {
-          return reject('Error fetching portfolio totals: ' + err.message);
-        }
+        if (err) return reject('Error fetching portfolio totals: ' + err.message);
         resolve(rows);
       });
     });
     const priceDetails = await new Promise((resolve, reject) => {
       db.all(`SELECT * FROM pricedetails WHERE account_id = ? ORDER BY datetime ASC`, [req.session.account.id], (err, rows) => {
-        if (err) {
-          return reject('Error fetching price details: ' + err.message);
-        }
+        if (err) return reject('Error fetching price details: ' + err.message);
         resolve(rows);
       });
     });
 
-    let priceDetailsRows = '';
-    if (priceDetails && priceDetails.length > 0) {
-      priceDetailsRows = priceDetails.map(row => `
+    // Build rows for price details and totals
+    let priceDetailsRows = priceDetails.length > 0 ? priceDetails.map(row => `
         <tr>
           <td>${row.Id}</td>
           <td>${row.name}</td>
@@ -314,19 +327,14 @@ app.get('/', async (req, res) => {
           <td>${Number(row.value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
           <td>${row.datetime}</td>
         </tr>
-      `).join('');
-    } else {
-      priceDetailsRows = `<tr><td colspan="6">No price details found. Please refresh the page.</td></tr>`;
-    }
+      `).join('') : `<tr><td colspan="6">No price details found. Please refresh the page.</td></tr>`;
 
-    let portfolioTotalRows = '';
-    if (portfolioTotals && portfolioTotals.length > 0) {
-      portfolioTotalRows = portfolioTotals.map(row => {
-        const formattedFinalTotal = Number(row.FinalTotal).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        const formattedDifference = row.difference >= 0 
-          ? `+${Number(row.difference).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` 
-          : Number(row.difference).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        return `
+    let portfolioTotalRows = portfolioTotals.length > 0 ? portfolioTotals.map(row => {
+      const formattedFinalTotal = Number(row.FinalTotal).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const formattedDifference = row.difference >= 0
+        ? `+${Number(row.difference).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        : Number(row.difference).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return `
           <tr>
             <td>${row.id}</td>
             <td>${formattedFinalTotal}</td>
@@ -334,198 +342,329 @@ app.get('/', async (req, res) => {
             <td>${formattedDifference}</td>
           </tr>
         `;
-      }).join('');
-    } else {
-      portfolioTotalRows = `<tr><td colspan="4">No portfolio totals found. Please refresh the page.</td></tr>`;
-    }
+    }).join('') : `<tr><td colspan="4">No portfolio totals found. Please refresh the page.</td></tr>`;
 
+    // Use a grid layout for the cards and include a new card for the stock graph
     const html = `
   <!DOCTYPE html>
-  <html lang="en">
-  <head>
+<html lang="en">
+
+<head>
     <meta charset="UTF-8">
     <title>Stock Price Checker - ${req.session.account.account_name}</title>
+    <!-- Include Chart.js from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-      body {
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        background: #f0f2f5;
-        margin: 0;
-        padding: 20px;
-        color: #333;
-      }
-      .container {
-        max-width: 1000px;
-        margin: 0 auto;
-      }
-      header {
-        text-align: center;
-        margin-bottom: 20px;
-      }
-      header h1 {
-        margin: 0;
-        padding: 20px;
-        background: #4CAF50;
-        color: #fff;
-        border-radius: 8px;
-      }
-      .header-info {
-        text-align: right;
-        margin-bottom: 10px;
-      }
-      .card {
-        background: #fff;
-        padding: 20px;
-        border-radius: 8px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        margin-bottom: 20px;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        margin-top: 10px;
-      }
-      table, th, td {
-        border: 1px solid #ddd;
-      }
-      th, td {
-        padding: 10px;
-        text-align: center;
-      }
-      th {
-        background: #4CAF50;
-        color: #fff;
-      }
-      tr:nth-child(even) {
-        background: #f9f9f9;
-      }
-      .total {
-        font-size: 1.2em;
-        margin-top: 10px;
-        color: #4CAF50;
-      }
-      form {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 10px;
-      }
-      form input, form button {
-        padding: 10px;
-        border: 1px solid #ccc;
-        border-radius: 4px;
-      }
-      form input {
-        flex: 1;
-      }
-      form button {
-        background: #4CAF50;
-        color: #fff;
-        border: none;
-        cursor: pointer;
-      }
-      form button:hover {
-        background: #45a049;
-      }
-      .message {
-        color: red;
-        margin: 10px 0;
-      }
-      .note {
-        font-size: 0.9em;
-        color: gray;
-      }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f0f2f5;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+        }
+
+        .header-info {
+            text-align: right;
+            margin-bottom: 10px;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        header h1 {
+            margin: 0;
+            padding: 10px;
+            background: #4CAF50;
+            color: #fff;
+            border-radius: 8px;
+        }
+
+        /* Grid container for cards */
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+            width: 100%;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            /* Remove any fixed width so grid handles sizing */
+        }
+
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+
+        table,
+        th,
+        td {
+            border: 1px solid #ddd;
+        }
+
+        th,
+        td {
+            padding: 10px;
+            text-align: center;
+        }
+
+        th {
+            background: #4CAF50;
+            color: #fff;
+        }
+
+        tr:nth-child(even) {
+            background: #f9f9f9;
+        }
+
+        .total {
+            font-size: 1.2em;
+            margin-top: 10px;
+            color: #4CAF50;
+        }
+
+        form {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        form input,
+        form button {
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        form input {
+            flex: 1;
+        }
+
+        form button {
+            background: #4CAF50;
+            color: #fff;
+            border: none;
+            cursor: pointer;
+        }
+
+        form button:hover {
+            background: #45a049;
+        }
+
+        .message {
+            color: red;
+            margin: 10px 0;
+        }
+
+        .note {
+            font-size: 0.9em;
+            color: gray;
+        }
+
+        /* Styling for the graph card and tabs */
+        .tabs {
+            display: flex;
+            margin-bottom: 10px;
+            overflow-x: auto;
+        }
+
+        .tab {
+            flex: none;
+            padding: 8px 12px;
+            margin-right: 5px;
+            background: #eee;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .tab.active {
+            background: #4CAF50;
+            color: #fff;
+        }
+
+        canvas {
+            width: 100% !important;
+            height: 250px !important;
+        }
     </style>
-  </head>
-  <body>
-    <div class="container">
-      <div class="header-info">
+</head>
+
+<body>
+    <div class="header-info">
         Logged in as: ${req.session.account.account_name} | <a href="/logout">Logout</a>
-      </div>
-      <header>
+    </div>
+    <header>
         <h1>Stock Price Checker</h1>
-      </header>
-      
-      <div class="card">
-        <h2>Price Details</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Id</th>
-              <th>Name</th>
-              <th>Quantity</th>
-              <th>Price (INR)</th>
-              <th>Value (INR)</th>
-              <th>Date</th>
-            </tr>
-          </thead>
-          <tbody id="priceDetailsBody">
-            ${priceDetailsRows}
-          </tbody>
-        </table>
-      </div>
-      
-      <div class="card">
-        <h2>Portfolio Total</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Id</th>
-              <th>Final Total (INR)</th>
-              <th>Date</th>
-              <th>Difference (INR)</th>
-            </tr>
-          </thead>
-          <tbody id="portfolioTotalBody">
-            ${portfolioTotalRows}
-          </tbody>
-        </table>
-        <div class="total">
-          <h2 id="totalValue">Total Portfolio Value: ₹0.00 (Diff: ₹0.00)</h2>
+    </header>
+    <div class="grid-container">
+        <div class="card" style="grid-column: span 2;">
+            <h2>Price Details</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Id</th>
+                        <th>Name</th>
+                        <th>Quantity</th>
+                        <th>Price (INR)</th>
+                        <th>Value (INR)</th>
+                        <th>Date</th>
+                    </tr>
+                </thead>
+                <tbody id="priceDetailsBody">
+                    ${priceDetailsRows}
+                </tbody>
+            </table>
         </div>
-      </div>
-      
-      <div class="card">
-        <h2>Add Stock</h2>
-        <form id="addStockForm">
-          <input type="text" id="stockName" placeholder="Stock Name" required>
-          <input type="text" id="stockSymbol" placeholder="Stock Symbol" required>
-          <input type="number" id="stockQuantity" placeholder="Quantity" required>
-          <button type="submit">Add Stock</button>
-        </form>
-        <div class="message" id="addStockMsg"></div>
-      </div>
-      
-      <div class="card">
-        <h2>Manage Stocks</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Stock Name</th>
-              <th>Symbol</th>
-              <th>Quantity</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="manageStocksBody">
-            <!-- Filled dynamically -->
-          </tbody>
-        </table>
-      </div>
-      
-      <div class="card">
-        <h2>Compare Portfolio Totals</h2>
-        <p class="note">Note: This comparison feature is intended for dates within the same month only.</p>
-        <p>Enter two dates in YYYY-MM-DD format:</p>
-        <form id="compareForm">
-          <input type="text" id="date1" placeholder="Start Date (YYYY-MM-DD)" required>
-          <input type="text" id="date2" placeholder="End Date (YYYY-MM-DD)" required>
-          <button type="submit">Compare</button>
-        </form>
-        <div id="compareResult"></div>
-      </div>
+        <div class="card"style="grid-column: span 2;">
+            <h2>Portfolio Total</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Id</th>
+                        <th>Final Total (INR)</th>
+                        <th>Date</th>
+                        <th>Difference (INR)</th>
+                    </tr>
+                </thead>
+                <tbody id="portfolioTotalBody">
+                    ${portfolioTotalRows}
+                </tbody>
+            </table>
+            <div class="total">
+                <h2 id="totalValue">Total Portfolio Value: ₹0.00 (Diff: ₹0.00)</h2>
+            </div>
+        </div>
+        <div class="card"style="grid-column: span 1;">
+            <h2>Add Stock</h2>
+            <form id="addStockForm">
+                <input type="text" id="stockName" placeholder="Stock Name" required>
+                <input type="text" id="stockSymbol" placeholder="Stock Symbol" required>
+                <input type="number" id="stockQuantity" placeholder="Quantity" required>
+                <button type="submit">Add Stock</button>
+            </form>
+            <div class="message" id="addStockMsg"></div>
+        </div>
+        <div class="card"style="grid-column: span 3;">
+            <h2>Manage Stocks</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Stock Name</th>
+                        <th>Symbol</th>
+                        <th>Quantity</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="manageStocksBody">
+                    <!-- Filled dynamically -->
+                </tbody>
+            </table>
+        </div>
+        <div class="card"style="grid-column: span 1;">
+            <h2>Compare Portfolio Totals</h2>
+            <p class="note">Note: This comparison feature is intended for dates within the same month only.</p>
+            <p>Enter two dates in YYYY-MM-DD format:</p>
+            <form id="compareForm">
+                <input type="text" id="date1" placeholder="Start Date (YYYY-MM-DD)" required>
+                <input type="text" id="date2" placeholder="End Date (YYYY-MM-DD)" required>
+                <button type="submit">Compare</button>
+            </form>
+            <div id="compareResult"></div>
+        </div>
+        <!-- New Card for Stock Graphs -->
+        <div class="card"style="grid-column: span 3;">
+            <h2>Stock Graphs</h2>
+            <div class="tabs" id="stockTabs">
+                <!-- Tabs will be populated dynamically -->
+            </div>
+            <canvas id="stockChart"></canvas>
+        </div>
     </div>
     
     <script>
+      // ---------- Chart Setup ----------
+      let stockChart; 
+      let currentStock = null;
+      let chartData = { labels: [], prices: [] };
+      let chartInterval = null;
+      
+      function initChart() {
+        const ctx = document.getElementById('stockChart').getContext('2d');
+        stockChart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: chartData.labels,
+            datasets: [{
+              label: currentStock,
+              data: chartData.prices,
+              borderColor: '#4CAF50',
+              fill: false,
+              tension: 0.1
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+              x: { display: true },
+              y: { display: true }
+            }
+          }
+        });
+      }
+      
+      async function updateChartData() {
+        if (!currentStock) return;
+        try {
+          const response = await fetch('/currentPrice?symbol=' + currentStock);
+          const data = await response.json();
+          const time = new Date().toLocaleTimeString();
+          // Append new data and limit array to last 10 points
+          chartData.labels.push(time);
+          chartData.prices.push(data.price);
+          if (chartData.labels.length > 10) {
+            chartData.labels.shift();
+            chartData.prices.shift();
+          }
+          stockChart.data.labels = chartData.labels;
+          stockChart.data.datasets[0].data = chartData.prices;
+          stockChart.update();
+        } catch (error) {
+          console.error('Error updating chart data:', error);
+        }
+      }
+      
+      function startChartInterval() {
+        if (chartInterval) clearInterval(chartInterval);
+        chartInterval = setInterval(updateChartData, 2000);
+      }
+      
+      function resetChartForStock(symbol) {
+        currentStock = symbol;
+        chartData = { labels: [], prices: [] };
+        if (stockChart) {
+          stockChart.data.labels = [];
+          stockChart.data.datasets[0].data = [];
+          stockChart.data.datasets[0].label = symbol;
+          stockChart.update();
+        } else {
+          initChart();
+        }
+        startChartInterval();
+      }
+      
+      // ---------- End Chart Setup ----------
+
       // Update the price details table by fetching latest stock data
       async function updatePriceDetailsTable() {
         try {
@@ -618,7 +757,7 @@ app.get('/', async (req, res) => {
             msgElem.style.color = 'green';
             msgElem.textContent = 'Stock added successfully!';
             document.getElementById('addStockForm').reset();
-            loadStocks(); // Refresh Manage Stocks table
+            loadStocks(); // Refresh Manage Stocks table and update tabs
           } else {
             msgElem.style.color = 'red';
             msgElem.textContent = result.error || 'Error adding stock.';
@@ -636,8 +775,10 @@ app.get('/', async (req, res) => {
           const response = await fetch('/stocks');
           const data = await response.json();
           let rowsHtml = '';
+          const tabsContainer = document.getElementById('stockTabs');
+          tabsContainer.innerHTML = '';
           if (data && data.length > 0) {
-            data.forEach((stock) => {
+            data.forEach((stock, index) => {
               rowsHtml += \`<tr>
                 <td>\${stock.stock_name}</td>
                 <td>\${stock.symbol}</td>
@@ -649,6 +790,23 @@ app.get('/', async (req, res) => {
                   <button onclick="deleteStock('\${stock.symbol}')">Delete</button>
                 </td>
               </tr>\`;
+              // Create a tab for each stock
+              const tab = document.createElement('div');
+              tab.className = 'tab';
+              tab.textContent = stock.stock_name;
+              tab.dataset.symbol = stock.symbol;
+              tab.onclick = function() {
+                // Remove active class from all tabs
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                this.classList.add('active');
+                resetChartForStock(this.dataset.symbol);
+              };
+              tabsContainer.appendChild(tab);
+              // Optionally, set the first tab as active if none is set
+              if (!currentStock && index === 0) {
+                tab.classList.add('active');
+                resetChartForStock(stock.symbol);
+              }
             });
           } else {
             rowsHtml = '<tr><td colspan="4">No stocks found.</td></tr>';
@@ -772,7 +930,7 @@ app.get('/portfolio', async (req, res) => {
                  price = excluded.price,
                  value = excluded.value;`,
               [req.session.account.id, stock.stock_name, stock.quantity, priceInRupees, valueInRupees, currentDate],
-              function(err) {
+              function (err) {
                 if (err) {
                   console.error('Error upserting price details:', err.message);
                   return reject(err);
