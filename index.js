@@ -40,16 +40,15 @@ const db = new sqlite3.Database(dbPath, (err) => {
   } else {
     console.log('Connected to the SQLite database.');
     db.serialize(() => {
-      // Portfolio total table now stores account_id and enforces uniqueness per account and date
+      // Now using a full date field (and not updating the same day record) so historical records remain
       db.run(`CREATE TABLE IF NOT EXISTS portfoliototal (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         account_id INTEGER,
         FinalTotal REAL,
         date TEXT,
-        difference REAL,
-        UNIQUE(account_id, date)
+        difference REAL
       )`);
-      // Price details table now stores account_id and enforces uniqueness per account, name, and datetime
+      // Price details table (one snapshot per day per stock)
       db.run(`CREATE TABLE IF NOT EXISTS pricedetails (
         Id INTEGER PRIMARY KEY AUTOINCREMENT,
         account_id INTEGER,
@@ -60,7 +59,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
         datetime TEXT,
         UNIQUE(account_id, name, datetime)
       )`);
-      // PMS accounts table now includes a password field for authentication
+      // PMS accounts table with a password field for authentication
       db.run(`CREATE TABLE IF NOT EXISTS pms_accounts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         account_name TEXT UNIQUE,
@@ -125,7 +124,8 @@ async function getStockPrice(symbol) {
 }
 
 // ---------------------------------
-// New Endpoint for Real-Time Graph
+// New Endpoint for Real-Time Graph (Old version)
+// (Now replaced by the Profit/Loss graph)
 // ---------------------------------
 app.get('/currentPrice', async (req, res) => {
   const symbol = req.query.symbol;
@@ -344,7 +344,7 @@ app.get('/', async (req, res) => {
         `;
     }).join('') : `<tr><td colspan="4">No portfolio totals found. Please refresh the page.</td></tr>`;
 
-    // Use a grid layout for the cards and include a new card for the stock graph
+    // Use a grid layout for the cards and include a new card for the profit/loss graph
     const html = `
   <!DOCTYPE html>
 <html lang="en">
@@ -395,9 +395,7 @@ app.get('/', async (req, res) => {
             padding: 20px;
             border-radius: 8px;
             box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-            /* Remove any fixed width so grid handles sizing */
         }
-
 
         table {
             width: 100%;
@@ -525,7 +523,7 @@ app.get('/', async (req, res) => {
                 </tbody>
             </table>
         </div>
-        <div class="card"style="grid-column: span 2;">
+        <div class="card" style="grid-column: span 2;">
             <h2>Portfolio Total</h2>
             <table>
                 <thead>
@@ -544,7 +542,7 @@ app.get('/', async (req, res) => {
                 <h2 id="totalValue">Total Portfolio Value: ₹0.00 (Diff: ₹0.00)</h2>
             </div>
         </div>
-        <div class="card"style="grid-column: span 1;">
+        <div class="card" style="grid-column: span 1;">
             <h2>Add Stock</h2>
             <form id="addStockForm">
                 <input type="text" id="stockName" placeholder="Stock Name" required>
@@ -554,7 +552,7 @@ app.get('/', async (req, res) => {
             </form>
             <div class="message" id="addStockMsg"></div>
         </div>
-        <div class="card"style="grid-column: span 3;">
+        <div class="card" style="grid-column: span 3;">
             <h2>Manage Stocks</h2>
             <table>
                 <thead>
@@ -570,7 +568,7 @@ app.get('/', async (req, res) => {
                 </tbody>
             </table>
         </div>
-        <div class="card"style="grid-column: span 1;">
+        <div class="card" style="grid-column: span 1;">
             <h2>Compare Portfolio Totals</h2>
             <p class="note">Note: This comparison feature is intended for dates within the same month only.</p>
             <p>Enter two dates in YYYY-MM-DD format:</p>
@@ -581,9 +579,9 @@ app.get('/', async (req, res) => {
             </form>
             <div id="compareResult"></div>
         </div>
-        <!-- New Card for Stock Graphs -->
-        <div class="card"style="grid-column: span 3;">
-            <h2>Stock Graphs</h2>
+        <!-- New Card for Profit/Loss Graph -->
+        <div class="card" style="grid-column: span 3;">
+            <h2>Stock Profit/Loss Graph</h2>
             <div class="tabs" id="stockTabs">
                 <!-- Tabs will be populated dynamically -->
             </div>
@@ -592,21 +590,18 @@ app.get('/', async (req, res) => {
     </div>
     
     <script>
-      // ---------- Chart Setup ----------
+      // ---------- Profit/Loss Chart Setup ----------
       let stockChart; 
-      let currentStock = null;
-      let chartData = { labels: [], prices: [] };
-      let chartInterval = null;
-      
-      function initChart() {
+
+      function initChart(labels, data, label) {
         const ctx = document.getElementById('stockChart').getContext('2d');
         stockChart = new Chart(ctx, {
           type: 'line',
           data: {
-            labels: chartData.labels,
+            labels: labels,
             datasets: [{
-              label: currentStock,
-              data: chartData.prices,
+              label: label,
+              data: data,
               borderColor: '#4CAF50',
               fill: false,
               tension: 0.1
@@ -623,44 +618,28 @@ app.get('/', async (req, res) => {
         });
       }
       
-      async function updateChartData() {
-        if (!currentStock) return;
+      async function loadProfitLossData(symbol) {
         try {
-          const response = await fetch('/currentPrice?symbol=' + currentStock);
+          const response = await fetch('/profitloss?symbol=' + symbol);
           const data = await response.json();
-          const time = new Date().toLocaleTimeString();
-          // Append new data and limit array to last 10 points
-          chartData.labels.push(time);
-          chartData.prices.push(data.price);
-          if (chartData.labels.length > 10) {
-            chartData.labels.shift();
-            chartData.prices.shift();
+          if (response.ok) {
+            // data is an array of objects: { date, profitLoss }
+            const labels = data.map(item => item.date);
+            const profitLossData = data.map(item => item.profitLoss);
+            if (stockChart) {
+              stockChart.data.labels = labels;
+              stockChart.data.datasets[0].data = profitLossData;
+              stockChart.data.datasets[0].label = symbol + ' Profit/Loss';
+              stockChart.update();
+            } else {
+              initChart(labels, profitLossData, symbol + ' Profit/Loss');
+            }
+          } else {
+            console.error(data.error);
           }
-          stockChart.data.labels = chartData.labels;
-          stockChart.data.datasets[0].data = chartData.prices;
-          stockChart.update();
         } catch (error) {
-          console.error('Error updating chart data:', error);
+          console.error('Error loading profit/loss data:', error);
         }
-      }
-      
-      function startChartInterval() {
-        if (chartInterval) clearInterval(chartInterval);
-        chartInterval = setInterval(updateChartData, 2000);
-      }
-      
-      function resetChartForStock(symbol) {
-        currentStock = symbol;
-        chartData = { labels: [], prices: [] };
-        if (stockChart) {
-          stockChart.data.labels = [];
-          stockChart.data.datasets[0].data = [];
-          stockChart.data.datasets[0].label = symbol;
-          stockChart.update();
-        } else {
-          initChart();
-        }
-        startChartInterval();
       }
       
       // ---------- End Chart Setup ----------
@@ -707,7 +686,7 @@ app.get('/', async (req, res) => {
         }
       }
       
-      // Update the portfolio total table (latest row) dynamically
+      // Update the portfolio total table dynamically
       async function updatePortfolioTotalTable() {
         try {
           const response = await fetch('/latestPortfolioTotal');
@@ -790,22 +769,21 @@ app.get('/', async (req, res) => {
                   <button onclick="deleteStock('\${stock.symbol}')">Delete</button>
                 </td>
               </tr>\`;
-              // Create a tab for each stock
+              // Create a tab for each stock. On click, load the profit/loss graph.
               const tab = document.createElement('div');
               tab.className = 'tab';
               tab.textContent = stock.stock_name;
               tab.dataset.symbol = stock.symbol;
               tab.onclick = function() {
-                // Remove active class from all tabs
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
                 this.classList.add('active');
-                resetChartForStock(this.dataset.symbol);
+                loadProfitLossData(this.dataset.symbol);
               };
               tabsContainer.appendChild(tab);
-              // Optionally, set the first tab as active if none is set
-              if (!currentStock && index === 0) {
+              // Set the first tab as active and load its profit/loss graph
+              if (index === 0) {
                 tab.classList.add('active');
-                resetChartForStock(stock.symbol);
+                loadProfitLossData(stock.symbol);
               }
             });
           } else {
@@ -885,7 +863,7 @@ app.get('/', async (req, res) => {
       updatePortfolioTotalTable();
       loadStocks();
       
-      // Automatically update every 2 seconds (for price details and totals)
+      // Refresh tables every 2 seconds (except the profit/loss graph which is loaded on tab click)
       setInterval(() => {
         updatePriceDetailsTable();
         fetchLatestPortfolioTotal();
@@ -946,21 +924,21 @@ app.get('/portfolio', async (req, res) => {
       })
     );
     const totalValueInRupees = portfolioWithPrices.reduce((acc, stock) => acc + (stock.price * stock.quantity || 0), 0);
-    db.get(`SELECT FinalTotal FROM portfoliototal WHERE account_id = ? AND date = ?`, [req.session.account.id, currentDate], (err, row) => {
-      let previousTotal = row ? row.FinalTotal : 0;
+    // Instead of updating a record for the current date (which caused real‐time comparisons),
+    // fetch the most recent record and, if its date is not today, insert a new record.
+    db.get(`SELECT FinalTotal, date FROM portfoliototal WHERE account_id = ? ORDER BY date DESC LIMIT 1`, [req.session.account.id], (err, row) => {
+      if (err) {
+         console.error('Error fetching last portfolio total:', err.message);
+         return res.status(500).json({ error: 'Error fetching portfolio total' });
+      }
+      let previousTotal = 0;
+      if (row && row.date !== currentDate) {
+         previousTotal = row.FinalTotal;
+      }
       const difference = totalValueInRupees - previousTotal;
-      if (row) {
-        db.run(`UPDATE portfoliototal SET FinalTotal = ?, difference = ? WHERE account_id = ? AND date = ?`,
-          [totalValueInRupees, difference, req.session.account.id, currentDate],
-          (err) => {
-            if (err) {
-              console.error('Error updating total:', err.message);
-            }
-          });
-      } else {
-        db.run(`INSERT INTO portfoliototal (account_id, FinalTotal, date, difference) VALUES (?, ?, ?, ?)`,
-          [req.session.account.id, totalValueInRupees, currentDate, difference]
-        );
+      if (!row || row.date !== currentDate) {
+         db.run(`INSERT INTO portfoliototal (account_id, FinalTotal, date, difference) VALUES (?, ?, ?, ?)`,
+          [req.session.account.id, totalValueInRupees, currentDate, difference]);
       }
       res.json(portfolioWithPrices);
     });
@@ -983,7 +961,7 @@ app.get('/latestPortfolioTotal', (req, res) => {
   });
 });
 
-// Endpoint to add a new stock to the account's portfolio
+// Endpoint to add a new stock to the account's portfolio (now storing purchasePrice)
 app.post('/addStock', async (req, res) => {
   if (!req.session.account) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -993,6 +971,14 @@ app.post('/addStock', async (req, res) => {
     if (!stock_name || !symbol || !quantity) {
       return res.status(400).json({ error: 'stock_name, symbol, and quantity are required.' });
     }
+    // Fetch initial price to store as purchasePrice
+    const { price, currency } = await getStockPrice(symbol);
+    const conversionRate = await fetchConversionRate();
+    if (!conversionRate) {
+      return res.status(500).json({ error: 'Failed to fetch conversion rate' });
+    }
+    const priceInRupees = currency === 'INR' ? price : price * conversionRate;
+    
     let portfolioData;
     const filePath = `./portfolios/portfolio_${req.session.account.id}.json`;
     try {
@@ -1001,7 +987,8 @@ app.post('/addStock', async (req, res) => {
     } catch (e) {
       portfolioData = { portfolio: [] };
     }
-    portfolioData.portfolio.push({ stock_name, symbol, quantity });
+    // Store purchasePrice along with the stock details
+    portfolioData.portfolio.push({ stock_name, symbol, quantity, purchasePrice: priceInRupees });
     await fs.writeFile(filePath, JSON.stringify(portfolioData, null, 2), 'utf8');
     res.json({ message: 'Stock added successfully!' });
   } catch (error) {
@@ -1084,6 +1071,44 @@ app.get('/stocks', async (req, res) => {
     const data = await fs.readFile(`./portfolios/portfolio_${req.session.account.id}.json`, 'utf8');
     const portfolioData = JSON.parse(data);
     res.json(portfolioData.portfolio);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// New Endpoint: Return historical profit/loss for a given stock (by symbol)
+app.get('/profitloss', async (req, res) => {
+  if (!req.session.account) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const symbol = req.query.symbol;
+  if (!symbol) {
+    return res.status(400).json({ error: 'Symbol is required.' });
+  }
+  try {
+    // Read portfolio file to get purchasePrice for this stock
+    const portfolioDataRaw = await fs.readFile(`./portfolios/portfolio_${req.session.account.id}.json`, 'utf8');
+    const portfolioData = JSON.parse(portfolioDataRaw);
+    const stock = portfolioData.portfolio.find(s => s.symbol === symbol);
+    if (!stock) {
+      return res.status(404).json({ error: 'Stock not found in portfolio.' });
+    }
+    const purchasePrice = stock.purchasePrice;
+    // Query historical price details for this stock (using stock_name)
+    db.all(`SELECT datetime, price, quantity, value FROM pricedetails WHERE account_id = ? AND name = ? ORDER BY datetime ASC`,
+      [req.session.account.id, stock.stock_name],
+      (err, rows) => {
+        if (err) {
+          console.error('Error fetching historical price details:', err.message);
+          return res.status(500).json({ error: 'Error fetching historical data.' });
+        }
+        // Calculate profit/loss: current value - (purchasePrice * quantity)
+        const result = rows.map(row => ({
+          date: row.datetime,
+          profitLoss: Number(row.value) - (purchasePrice * Number(row.quantity))
+        }));
+        res.json(result);
+      });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
