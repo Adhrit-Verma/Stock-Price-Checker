@@ -1,6 +1,3 @@
 .history
-/portifolio.db
-*.db
-portfolio.json
-portfolio.db
+./portfolios
 portfolio.db
