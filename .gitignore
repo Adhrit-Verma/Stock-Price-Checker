@@ -1,3 +1,4 @@
 .history
 ./portfolios
 portfolio.db
+*.db
