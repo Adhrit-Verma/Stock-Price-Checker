@@ -333,45 +333,45 @@ app.get('/', async (req, res) => {
     // Build initial HTML table rows (server‐side)
     let priceDetailsRows = priceDetails.length
       ? priceDetails
-          .map((row) => {
-            return `
+        .map((row) => {
+          return `
               <tr>
                 <td>${row.Id}</td>
                 <td>${row.name}</td>
                 <td>${row.quantity}</td>
                 <td>${Number(row.price).toLocaleString('en-IN', {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2
-                })}</td>
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+          })}</td>
                 <td>${Number(row.value).toLocaleString('en-IN', {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2
-                })}</td>
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+          })}</td>
                 <td>${row.datetime}</td>
               </tr>
             `;
-          })
-          .join('')
+        })
+        .join('')
       : `<tr><td colspan="6">No price details found. Please refresh the page.</td></tr>`;
 
     let portfolioTotalRows = portfolioTotals.length
       ? portfolioTotals
-          .map((row) => {
-            const formattedFinalTotal = Number(row.FinalTotal).toLocaleString('en-IN', {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2
-            });
-            const formattedDifference =
-              row.difference >= 0
-                ? `${Number(row.difference).toLocaleString('en-IN', {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2
-                  })}`
-                : Number(row.difference).toLocaleString('en-IN', {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2
-                  });
-            return `
+        .map((row) => {
+          const formattedFinalTotal = Number(row.FinalTotal).toLocaleString('en-IN', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+          });
+          const formattedDifference =
+            row.difference >= 0
+              ? `${Number(row.difference).toLocaleString('en-IN', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+              })}`
+              : Number(row.difference).toLocaleString('en-IN', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+              });
+          return `
               <tr>
                 <td>${row.id}</td>
                 <td>${formattedFinalTotal}</td>
@@ -379,8 +379,8 @@ app.get('/', async (req, res) => {
                 <td>${formattedDifference}</td>
               </tr>
             `;
-          })
-          .join('')
+        })
+        .join('')
       : `<tr><td colspan="4">No portfolio totals found. Please refresh the page.</td></tr>`;
 
     // Return the full HTML
@@ -540,6 +540,7 @@ app.get('/', async (req, res) => {
           </div>
           <div class="card" style="grid-column: span 2;">
               <h2>Portfolio Total</h2>
+              <button id="refresh-price-btn">Refresh Price</button>
               <table>
                   <thead>
                       <tr>
@@ -601,7 +602,25 @@ app.get('/', async (req, res) => {
               <canvas id="portfolioChart"></canvas>
           </div>
       </div>
-      
+      <script>
+      document.getElementById('refresh-price-btn').addEventListener('click', async () => {
+      document.getElementById('refresh-price-btn').disabled = true;
+      document.getElementById('refresh-price-btn').textContent = 'Refreshing...';
+
+        try {
+          await updatePriceDetailsTable();
+          await fetchLatestPortfolioTotal();
+          await updatePortfolioTotalTable();
+        } catch (e) {
+          console.error('Manual refresh failed:', e);
+        } finally {
+          setTimeout(() => {
+            document.getElementById('refresh-price-btn').disabled = false;
+            document.getElementById('refresh-price-btn').textContent = 'Refresh Price';
+          }, 1000);
+        }
+      });
+      </script>
       <script>
         // ---------- Portfolio Growth Chart Setup ----------
         let portfolioChart;
@@ -878,17 +897,21 @@ app.get('/', async (req, res) => {
         });
         
         // Initial fetch on page load
+        (async () => {
+          await fetchLatestPortfolioTotal();
+          await updatePortfolioTotalTable();
+        })();
+
         updatePriceDetailsTable();
         fetchLatestPortfolioTotal();
         updatePortfolioTotalTable();
         loadStocks();
-        
+
         // Refresh tables every 2 seconds
         setInterval(() => {
           updatePriceDetailsTable();
-          fetchLatestPortfolioTotal();
-          updatePortfolioTotalTable();
         }, 2000);
+        
       </script>
   </body>
   </html>
@@ -926,7 +949,7 @@ app.get('/portfolio', async (req, res) => {
           const { price, currency } = await getStockPrice(stock.symbol);
           const priceInRupees = currency === 'INR' ? price : price * conversionRate;
           const valueInRupees = priceInRupees * stock.quantity;
-          
+
           return new Promise((resolve, reject) => {
             db.run(
               `INSERT INTO pricedetails (account_id, name, quantity, price, value, datetime)
@@ -1112,7 +1135,7 @@ app.post('/addStock', async (req, res) => {
       return res.status(500).json({ error: 'Failed to fetch conversion rate' });
     }
     const priceInRupees = currency === 'INR' ? price : price * conversionRate;
-    
+
     let portfolioData;
     const filePath = `./portfolios/portfolio_${req.session.account.id}.json`;
     try {
