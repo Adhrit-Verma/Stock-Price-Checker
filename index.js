@@ -2,10 +2,15 @@ const express = require('express');
 const session = require('express-session');
 const axios = require('axios');
 const yahooFinance = require('yahoo-finance2').default;
-const fs = require('fs').promises;
+const fsSync = require('fs');               // full fs module for stream support
+const fs = require('fs').promises;    // keep promises if you're using them elsewhere
 const dns = require('dns');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const multer = require('multer');
+const csv = require('csv-parser');
+
+const upload = multer({ dest: 'uploads/' });
 
 const app = express();
 const port = process.env.PORT || 5001;
@@ -302,6 +307,98 @@ app.get('/logout', (req, res) => {
 // ----------------------------------------------
 // Portfolio & Stock Management (Protected)
 // ----------------------------------------------
+app.post('/importPortfolio', upload.single('csvfile'), async (req, res) => {
+  if (!req.session.account) return res.send(`<script>alert("Unauthorized access."); window.history.back();</script>`);
+
+  const fsSync = require('fs');
+  const path = require('path');
+  const yahooFinance = require('yahoo-finance2').default;
+  const results = [];
+  const filePath = req.file?.path;
+
+  try {
+    const accountId = req.session.account.id;
+    const conversionRate = await fetchConversionRate();
+    if (!conversionRate) return res.send(`<script>alert("Failed to fetch conversion rate."); window.history.back();</script>`);
+
+    const ext = path.extname(req.file.originalname).toLowerCase();
+    if (ext !== '.csv') {
+      fsSync.unlinkSync(filePath);
+      return res.send(`<script>alert("Invalid file type. Please upload a .csv file."); window.history.back();</script>`);
+    }
+
+    const fileStream = fsSync.createReadStream(filePath);
+    const requiredHeaders = ['stock_name', 'symbol', 'quantity'];
+
+    await new Promise((resolve, reject) => {
+      fileStream
+        .pipe(csv())
+        .on('headers', (headers) => {
+          const lowerHeaders = headers.map(h => h.toLowerCase().trim());
+          const hasAll = requiredHeaders.every(h => lowerHeaders.includes(h));
+          if (!hasAll) {
+            fileStream.destroy();
+            reject(new Error('CSV must contain headers: stock_name, symbol, quantity'));
+          }
+        })
+        .on('data', (row) => {
+          const name = (row['stock_name'] || '').trim();
+          const symbol = (row['symbol'] || '').trim();
+          let quantity = row['quantity'];
+
+          if (!name || !quantity || !symbol) return;
+          quantity = parseInt(String(quantity).replace(/[,\.]/g, ''), 10);
+          if (isNaN(quantity) || quantity <= 0) return;
+
+          results.push({ stock_name: name, symbol, quantity });
+        })
+        .on('end', resolve)
+        .on('error', reject);
+    });
+
+    const portfolioPath = `./portfolios/portfolio_${accountId}.json`;
+    let portfolioData = { portfolio: [] };
+
+    try {
+      const data = await fs.readFile(portfolioPath, 'utf8');
+      portfolioData = JSON.parse(data);
+    } catch {
+      portfolioData = { portfolio: [] };
+    }
+
+    const portfolioMap = new Map();
+    portfolioData.portfolio.forEach(stock => {
+      portfolioMap.set(stock.symbol, stock);
+    });
+
+    for (const stock of results) {
+      try {
+        const { price, currency } = await getStockPrice(stock.symbol);
+        const priceInRupees = currency === 'INR' ? price : price * conversionRate;
+
+        portfolioMap.set(stock.symbol, {
+          stock_name: stock.stock_name,
+          symbol: stock.symbol,
+          quantity: stock.quantity,
+          purchasePrice: priceInRupees
+        });
+      } catch (e) {
+        console.warn(`Skipping ${stock.symbol} due to price fetch error:`, e.message);
+      }
+    }
+
+    const merged = Array.from(portfolioMap.values());
+    await fs.writeFile(portfolioPath, JSON.stringify({ portfolio: merged }, null, 2), 'utf8');
+
+    res.redirect('/');
+  } catch (error) {
+    console.error('Import Error:', error.message);
+    res.send(`<script>alert("Import failed: ${error.message}"); window.history.back();</script>`);
+  } finally {
+    if (filePath) fs.unlink(filePath).catch(() => {});
+  }
+});
+
 app.get('/', async (req, res) => {
   if (!req.session.account) {
     return res.redirect('/login');
@@ -510,6 +607,29 @@ app.get('/', async (req, res) => {
               width: 100% !important;
               height: 250px !important;
           }
+
+          .scrollable-table {
+            max-height: 300px; /* or any height you prefer */
+            overflow-y: auto;
+            border: 1px solid #ccc;
+          }
+
+          .scrollable-table table {
+            width: 100%;
+            border-collapse: collapse;
+          }
+
+          .scrollable-table thead th {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+          }
+
+          .scrollable-table th, .scrollable-table td {
+            padding: 8px;
+            border: 1px solid #ddd;
+            text-align: left;
+          }
       </style>
   </head>
   <body>
@@ -522,21 +642,31 @@ app.get('/', async (req, res) => {
       <div class="grid-container">
           <div class="card" style="grid-column: span 2;">
               <h2>Price Details</h2>
-              <table>
+              <div class="card" style="grid-column: span 1;">
+                <h2>Import from CSV</h2>
+                <form action="/importPortfolio" method="POST" enctype="multipart/form-data">
+                  <input type="file" name="csvfile" accept=".csv" required />
+                  <button type="submit">Import</button>
+                </form>
+                <p class="note">CSV must have headers: stock_name, symbol, quantity</p>
+              </div>
+              <div class="scrollable-table">
+                <table>
                   <thead>
-                      <tr>
-                          <th>Id</th>
-                          <th>Name</th>
-                          <th>Quantity</th>
-                          <th>Price (INR)</th>
-                          <th>Value (INR)</th>
-                          <th>Date</th>
-                      </tr>
+                    <tr>
+                      <th>Id</th>
+                      <th>Name</th>
+                      <th>Quantity</th>
+                      <th>Price (INR)</th>
+                      <th>Value (INR)</th>
+                      <th>Date</th>
+                    </tr>
                   </thead>
                   <tbody id="priceDetailsBody">
-                      ${priceDetailsRows}
+                    ${priceDetailsRows}
                   </tbody>
-              </table>
+                </table>
+              </div>
           </div>
           <div class="card" style="grid-column: span 2;">
               <h2>Portfolio Total</h2>
